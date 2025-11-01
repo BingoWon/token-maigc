@@ -1,0 +1,16 @@
+[gd_scene load_steps=2 format=3 uid="uid://dxbqxyfp2i38x"]
+
+[ext_resource type="Script" path="res://message_bubble.gd" id="1"]
+
+[node name="MessageBubble" type="PanelContainer"]
+script = ExtResource("1")
+
+[node name="MarginContainer" type="MarginContainer" parent="."]
+layout_mode = 2
+
+[node name="Label" type="RichTextLabel" parent="MarginContainer"]
+custom_minimum_size = Vector2(200, 0)
+layout_mode = 2
+bbcode_enabled = true
+fit_content = true
+autowrap_mode = 3

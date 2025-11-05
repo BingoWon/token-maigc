@@ -10,10 +10,14 @@ config_version=5
 
 [application]
 
-config/name="Token Maigc"
+config/name="Token Magic"
 run/main_scene="res://chat_ui.tscn"
 config/features=PackedStringArray("4.5", "Mobile")
 config/icon="res://icon.svg"
+
+[autoload]
+
+GameState="*res://game_state.gd"
 
 [editor_plugins]
 

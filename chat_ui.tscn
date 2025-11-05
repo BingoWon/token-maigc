@@ -52,12 +52,33 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "⚙️"
 
+[node name="RestartButton" type="Button" parent="MarginContainer/VBoxContainer/TitleContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "Restart"
+
 [node name="UsageLabel" type="Label" parent="MarginContainer/VBoxContainer"]
 unique_name_in_owner = true
 layout_mode = 2
 theme_override_font_sizes/font_size = 12
 text = "Tokens - Prompt: 0 | Completion: 0 | Total: 0"
 horizontal_alignment = 1
+
+[node name="StatusLabel" type="Label" parent="MarginContainer/VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "Status: Morale 0 | Intel 0 | Turns 0"
+horizontal_alignment = 1
+
+[node name="ObjectivesLabel" type="RichTextLabel" parent="MarginContainer/VBoxContainer"]
+unique_name_in_owner = true
+layout_mode = 2
+bbcode_enabled = true
+fit_content = true
+autowrap_mode = 3
+text = "[b]Objectives[/b]"
+scroll_active = false
 
 [node name="ScrollContainer" type="ScrollContainer" parent="MarginContainer/VBoxContainer"]
 unique_name_in_owner = true

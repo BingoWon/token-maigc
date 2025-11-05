@@ -1,23 +1,10 @@
-extends Control
 class_name ChatUI
+extends Control
 
 # Constants
-const API_URL: String = "https://api.siliconflow.cn/v1/chat/completions"
 const API_HOST: String = "api.siliconflow.cn"
 const API_PORT: int = 443
-const WELCOME_MESSAGE: String = "Hello! I'm DeepSeek AI with streaming support. How can I help you?"
 const ERROR_PREFIX: String = "❌ "
-const THINKING_EMOJI: String = "💭"
-
-# UI References
-@onready var messages_container: VBoxContainer = %MessagesContainer
-@onready var scroll_container: ScrollContainer = %ScrollContainer
-@onready var input_field: TextEdit = %InputField
-@onready var send_button: Button = %SendButton
-@onready var settings_button: Button = %SettingsButton
-@onready var loading_label: Label = %LoadingLabel
-@onready var usage_label: Label = %UsageLabel
-@onready var settings_panel: PopupPanel = $SettingsPanel
 
 # Scene References
 var message_bubble_scene: PackedScene = preload("res://message_bubble.tscn")
@@ -38,17 +25,34 @@ var total_prompt_tokens: int = 0
 var total_completion_tokens: int = 0
 var pending_usage: Dictionary = {}  # Temporary storage for current stream's usage
 
+# UI References
+@onready var messages_container: VBoxContainer = %MessagesContainer
+@onready var scroll_container: ScrollContainer = %ScrollContainer
+@onready var input_field: TextEdit = %InputField
+@onready var send_button: Button = %SendButton
+@onready var settings_button: Button = %SettingsButton
+@onready var restart_button: Button = %RestartButton
+@onready var loading_label: Label = %LoadingLabel
+@onready var usage_label: Label = %UsageLabel
+@onready var status_label: Label = %StatusLabel
+@onready var objectives_label: RichTextLabel = %ObjectivesLabel
+@onready var settings_panel: PopupPanel = $SettingsPanel
+
 func _ready() -> void:
 	_connect_signals()
 	_initialize_ui()
 	_load_settings()
-	_show_welcome_message()
+	_initialize_game()
 
 func _connect_signals() -> void:
 	send_button.pressed.connect(_on_send_button_pressed)
 	settings_button.pressed.connect(_on_settings_button_pressed)
+	restart_button.pressed.connect(_on_restart_button_pressed)
 	input_field.gui_input.connect(_on_input_field_gui_input)
 	settings_panel.settings_changed.connect(_on_settings_changed)
+	GameState.stats_changed.connect(_on_stats_changed)
+	GameState.objectives_updated.connect(_on_objectives_updated)
+	GameState.game_over.connect(_on_game_over)
 
 func _initialize_ui() -> void:
 	loading_label.visible = false
@@ -58,8 +62,42 @@ func _initialize_ui() -> void:
 func _load_settings() -> void:
 	api_settings = settings_panel.get_settings()
 
-func _show_welcome_message() -> void:
-	_add_message(MessageBubble.Role.ASSISTANT, WELCOME_MESSAGE)
+func _initialize_game() -> void:
+	if http_client:
+		http_client.close()
+
+	is_streaming = false
+	http_client = null
+	stream_buffer = ""
+	pending_usage = {}
+	_reset_streaming_state()
+
+	GameState.reset_game()
+
+	conversation_history.clear()
+	_refresh_system_prompt()
+
+	for child: Node in messages_container.get_children():
+		child.queue_free()
+
+	current_thinking_bubble = null
+	current_answer_bubble = null
+
+	var intro_text: String = GameState.get_intro_message()
+	_add_message(MessageBubble.Role.ASSISTANT, intro_text)
+	conversation_history.append({"role": "assistant", "content": intro_text})
+
+	_set_input_enabled(true)
+	loading_label.visible = false
+
+func _refresh_system_prompt() -> void:
+	var prompt: String = GameState.get_system_prompt()
+	if conversation_history.is_empty():
+		conversation_history.append({"role": "system", "content": prompt})
+	elif conversation_history[0].get("role", "") == "system":
+		conversation_history[0] = {"role": "system", "content": prompt}
+	else:
+		conversation_history.insert(0, {"role": "system", "content": prompt})
 
 func _on_send_button_pressed() -> void:
 	_send_message()
@@ -69,6 +107,9 @@ func _on_settings_button_pressed() -> void:
 
 func _on_settings_changed(settings: Dictionary) -> void:
 	api_settings = settings
+
+func _on_restart_button_pressed() -> void:
+	clear_conversation()
 
 func _on_input_field_gui_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed:
@@ -82,10 +123,24 @@ func _send_message() -> void:
 	if text.is_empty():
 		return
 
+	if GameState.is_game_over():
+		var end_notice := "The operation is over. Press Restart to begin a new run."
+		_add_message(MessageBubble.Role.ASSISTANT, end_notice)
+		input_field.text = ""
+		return
+
 	_set_input_enabled(false)
 	_add_message(MessageBubble.Role.USER, text)
 	conversation_history.append({"role": "user", "content": text})
 	input_field.text = ""
+
+	GameState.register_player_message(text)
+	GameState.advance_turn()
+	_refresh_system_prompt()
+
+	if GameState.is_game_over():
+		loading_label.visible = false
+		return
 
 	_reset_streaming_state()
 	_prepare_thinking_bubble()
@@ -183,7 +238,7 @@ func _build_request_headers(api_key: String) -> PackedStringArray:
 
 func _wait_for_connection() -> void:
 	while http_client.get_status() == HTTPClient.STATUS_CONNECTING or \
-		  http_client.get_status() == HTTPClient.STATUS_RESOLVING:
+			http_client.get_status() == HTTPClient.STATUS_RESOLVING:
 		http_client.poll()
 		await get_tree().process_frame
 
@@ -279,10 +334,12 @@ func _create_answer_bubble() -> void:
 
 func _finalize_stream() -> void:
 	loading_label.visible = false
-	_set_input_enabled(true)
 
 	if not accumulated_answer.is_empty():
 		conversation_history.append({"role": "assistant", "content": accumulated_answer})
+		_handle_gameplay_update(accumulated_answer)
+	else:
+		_refresh_system_prompt()
 
 	# Update usage statistics only once at the end
 	if not pending_usage.is_empty():
@@ -290,6 +347,11 @@ func _finalize_stream() -> void:
 		pending_usage = {}
 
 	http_client = null
+
+	if GameState.is_game_over():
+		_set_input_enabled(false)
+	else:
+		_set_input_enabled(true)
 
 func _handle_error(error_message: String) -> void:
 	push_error("API Error: " + error_message)
@@ -308,16 +370,86 @@ func _set_input_enabled(enabled: bool) -> void:
 	if enabled:
 		input_field.grab_focus()
 
-func clear_conversation() -> void:
-	conversation_history.clear()
-	for child: Node in messages_container.get_children():
-		child.queue_free()
-	_show_welcome_message()
+func _on_stats_changed(stats: Dictionary) -> void:
+	var morale: int = stats.get("morale", 0)
+	var intel: int = stats.get("intel", 0)
+	var turns: int = stats.get("turns_left", 0)
+	var outcome: String = str(stats.get("outcome", ""))
 
-	# Reset usage statistics
+	var status_text: String = "Status: Morale %d | Intel %d | Turns %d" % [
+		morale,
+		intel,
+		turns
+	]
+
+	if not outcome.is_empty():
+		status_text += " | %s" % outcome.to_upper()
+
+	status_label.text = status_text
+
+func _on_objectives_updated(_objectives: Array) -> void:
+	objectives_label.text = GameState.get_objectives_bbcode()
+
+func _on_game_over(result: String, summary: String) -> void:
+	var heading: String = "Mission Failed"
+	if result == "victory":
+		heading = "Mission Accomplished"
+	var message: String = "[b]%s[/b]\n%s\n\nPress Restart to begin a new run." % [heading, summary]
+	_add_message(MessageBubble.Role.ASSISTANT, message)
+	conversation_history.append({"role": "assistant", "content": message})
+	loading_label.visible = false
+	_set_input_enabled(false)
+
+func _handle_gameplay_update(raw_response: String) -> void:
+	var payload: Dictionary = _extract_game_payload(raw_response)
+	if payload.is_empty():
+		push_warning("Failed to parse AI game payload. Ensure responses follow the JSON contract.")
+		_refresh_system_prompt()
+		return
+
+	var display_text: String = str(payload.get("narrative", raw_response)).strip_edges()
+
+	var flags_data: Variant = payload.get("flags", {})
+	if flags_data is Dictionary:
+		var flags: Dictionary = flags_data
+		if flags.has("hint"):
+			display_text += "\n[i]Hint: %s[/i]" % str(flags["hint"])
+
+	if current_answer_bubble:
+		current_answer_bubble.update_text(display_text)
+
+	GameState.apply_ai_payload(payload)
+	_refresh_system_prompt()
+
+func _extract_game_payload(text: String) -> Dictionary:
+	var start_marker: String = "```json"
+	var start_index: int = text.find(start_marker)
+	var json_source: String = ""
+
+	if start_index != -1:
+		start_index += start_marker.length()
+		var end_index: int = text.find("```", start_index)
+		if end_index == -1:
+			end_index = text.length()
+		json_source = text.substr(start_index, end_index - start_index).strip_edges()
+	else:
+		json_source = text.strip_edges()
+
+	var parser := JSON.new()
+	if parser.parse(json_source) != OK:
+		return {}
+
+	var data: Variant = parser.data
+	if data is Dictionary:
+		return data
+
+	return {}
+
+func clear_conversation() -> void:
 	total_prompt_tokens = 0
 	total_completion_tokens = 0
 	_update_usage_display()
+	_initialize_game()
 
 func _update_usage_stats(usage: Dictionary) -> void:
 	total_prompt_tokens += usage.get("prompt_tokens", 0)
